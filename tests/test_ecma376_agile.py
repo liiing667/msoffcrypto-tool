@@ -3,8 +3,10 @@
 import io
 import unittest
 from os.path import dirname, join
+from struct import pack
 
 from msoffcrypto import OfficeFile, exceptions
+from msoffcrypto.format.ooxml import _parseinfo_agile
 from msoffcrypto.method.ecma376_agile import ECMA376Agile
 
 #: directory with input
@@ -64,6 +66,44 @@ class ECMA376AgileTest(unittest.TestCase):
 
             package[100] ^= 0x01
             self.assertFalse(ECMA376Agile.verify_integrity(*args, io.BytesIO(bytes(package))))
+
+
+def _encryption_info_stream(xml):
+    return io.BytesIO(pack("<HHI", 4, 4, 0x40) + xml.encode("UTF-8"))
+
+
+class ECMA376AgileMalformedInfoTest(unittest.TestCase):
+    """Malformed EncryptionInfo must raise DecryptionError before decryption."""
+
+    @staticmethod
+    def _valid_xml():
+        with open(join(DATA_DIR, "example_password.xlsx"), "rb") as f:
+            ofile = OfficeFile(f)
+            with ofile.file.openstream("EncryptionInfo") as stream:
+                stream.seek(8)
+                return stream.read().decode("UTF-8")
+
+    def assert_malformed(self, xml):
+        with self.assertRaises(exceptions.DecryptionError):
+            _parseinfo_agile(_encryption_info_stream(xml))
+
+    def test_valid_info_parses(self):
+        _parseinfo_agile(_encryption_info_stream(self._valid_xml()))
+
+    def test_unknown_hash_algorithm(self):
+        self.assert_malformed(self._valid_xml().replace('hashAlgorithm="SHA512"', 'hashAlgorithm="MD5"'))
+
+    def test_invalid_key_bits(self):
+        self.assert_malformed(self._valid_xml().replace('keyBits="256"', 'keyBits="100"'))
+
+    def test_invalid_block_size(self):
+        self.assert_malformed(self._valid_xml().replace('blockSize="16"', 'blockSize="8"'))
+
+    def test_mismatched_salt_size(self):
+        self.assert_malformed(self._valid_xml().replace('saltSize="16"', 'saltSize="8"'))
+
+    def test_non_numeric_attribute(self):
+        self.assert_malformed(self._valid_xml().replace('keyBits="256"', 'keyBits="bogus"'))
 
 
 if __name__ == "__main__":

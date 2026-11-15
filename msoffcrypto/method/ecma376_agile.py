@@ -27,6 +27,12 @@ ALGORITHM_HASH = {
     "SHA512": sha512,
 }
 
+#: AES is the only cipher supported for agile encryption; its block size is 16 bytes.
+_AES_BLOCK_SIZE = 16
+
+#: Valid AES key sizes in bits.
+_AES_KEY_BITS = (128, 192, 256)
+
 blkKey_VerifierHashInput = bytearray([0xFE, 0xA7, 0xD2, 0x76, 0x3B, 0x4B, 0x9E, 0x79])
 blkKey_encryptedVerifierHashValue = bytearray(
     [0xD7, 0xAA, 0x0F, 0x6D, 0x30, 0x61, 0x34, 0x4E]
@@ -60,7 +66,52 @@ def _normalize_key(key, n):
 
 
 def _get_hash_func(algorithm):
-    return ALGORITHM_HASH.get(algorithm, sha1)
+    try:
+        return ALGORITHM_HASH[algorithm]
+    except KeyError:
+        raise exceptions.DecryptionError(
+            "Unsupported hash algorithm: {!r}".format(algorithm)
+        )
+
+
+def _validate_agile_params(
+    hashAlgorithm, keyBits=None, blockSize=None, saltValue=None, saltSize=None
+):
+    r"""Validate agile encryption parameters parsed from EncryptionInfo.
+
+    Raises DecryptionError on any value not conforming to [MS-OFFCRYPTO]
+    2.3.4.10, so that malformed files from untrusted sources fail with a
+    controlled exception instead of a low-level error or a silent fallback.
+    """
+    if hashAlgorithm not in ALGORITHM_HASH:
+        raise exceptions.DecryptionError(
+            "Unsupported agile hashAlgorithm: {!r}".format(hashAlgorithm)
+        )
+    if keyBits is not None and keyBits not in _AES_KEY_BITS:
+        raise exceptions.DecryptionError(
+            "Invalid agile keyBits: {} (must be one of {})".format(
+                keyBits, list(_AES_KEY_BITS)
+            )
+        )
+    if blockSize is not None and blockSize != _AES_BLOCK_SIZE:
+        raise exceptions.DecryptionError(
+            "Invalid agile blockSize: {} (must be {} for AES)".format(
+                blockSize, _AES_BLOCK_SIZE
+            )
+        )
+    if saltValue is not None:
+        if saltSize is not None and len(saltValue) != saltSize:
+            raise exceptions.DecryptionError(
+                "Agile saltValue length {} does not match saltSize {}".format(
+                    len(saltValue), saltSize
+                )
+            )
+        if len(saltValue) != _AES_BLOCK_SIZE:
+            raise exceptions.DecryptionError(
+                "Invalid agile salt length: {} (must be {} bytes)".format(
+                    len(saltValue), _AES_BLOCK_SIZE
+                )
+            )
 
 
 def _decrypt_aes_cbc(data, key, iv):

@@ -10,7 +10,7 @@ import olefile
 from msoffcrypto import exceptions
 from msoffcrypto.format import base
 from msoffcrypto.format.common import _parse_encryptionheader, _parse_encryptionverifier
-from msoffcrypto.method.ecma376_agile import ECMA376Agile
+from msoffcrypto.method.ecma376_agile import ECMA376Agile, _validate_agile_params
 from msoffcrypto.method.ecma376_standard import ECMA376Standard
 
 logger = logging.getLogger(__name__)
@@ -60,17 +60,31 @@ def _parseinfo_standard(ole):
     return info
 
 
+def _parse_int_attr(node, name):
+    value = node.getAttribute(name)
+    try:
+        return int(value)
+    except ValueError:
+        raise exceptions.DecryptionError(
+            "Invalid EncryptionInfo attribute {}={!r}".format(name, value)
+        )
+
+
 def _parseinfo_agile(ole):
     ole.seek(8)
     xml = parseString(ole.read())
+    keyData_node = xml.getElementsByTagName("keyData")[0]
     keyDataSalt = base64.b64decode(
-        xml.getElementsByTagName("keyData")[0].getAttribute("saltValue")
+        keyData_node.getAttribute("saltValue")
     )
-    keyDataHashAlgorithm = xml.getElementsByTagName("keyData")[0].getAttribute(
-        "hashAlgorithm"
-    )
-    keyDataBlockSize = int(
-        xml.getElementsByTagName("keyData")[0].getAttribute("blockSize")
+    keyDataHashAlgorithm = keyData_node.getAttribute("hashAlgorithm")
+    keyDataBlockSize = _parse_int_attr(keyData_node, "blockSize")
+    keyDataSaltSize = _parse_int_attr(keyData_node, "saltSize")
+    _validate_agile_params(
+        keyDataHashAlgorithm,
+        blockSize=keyDataBlockSize,
+        saltValue=keyDataSalt,
+        saltSize=keyDataSaltSize,
     )
     encryptedHmacKey = base64.b64decode(
         xml.getElementsByTagName("dataIntegrity")[0].getAttribute("encryptedHmacKey")
@@ -81,7 +95,7 @@ def _parseinfo_agile(ole):
     password_node = xml.getElementsByTagNameNS(
         "http://schemas.microsoft.com/office/2006/keyEncryptor/password", "encryptedKey"
     )[0]
-    spinValue = int(password_node.getAttribute("spinCount"))
+    spinValue = _parse_int_attr(password_node, "spinCount")
     # [MS-OFFCRYPTO] 2.3.4.10 SpinCount: An unsigned integer that specifies the number of times to iterate on a hash of a password. It MUST NOT be greater than 10,000,000.
     # https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-offcrypto/87020a34-e73f-4139-99bc-bbdf6cf6fa55
     if not 0 <= spinValue <= 10_000_000:
@@ -97,7 +111,16 @@ def _parseinfo_agile(ole):
     )
     passwordSalt = base64.b64decode(password_node.getAttribute("saltValue"))
     passwordHashAlgorithm = password_node.getAttribute("hashAlgorithm")
-    passwordKeyBits = int(password_node.getAttribute("keyBits"))
+    passwordKeyBits = _parse_int_attr(password_node, "keyBits")
+    passwordBlockSize = _parse_int_attr(password_node, "blockSize")
+    passwordSaltSize = _parse_int_attr(password_node, "saltSize")
+    _validate_agile_params(
+        passwordHashAlgorithm,
+        keyBits=passwordKeyBits,
+        blockSize=passwordBlockSize,
+        saltValue=passwordSalt,
+        saltSize=passwordSaltSize,
+    )
     info = {
         "keyDataSalt": keyDataSalt,
         "keyDataHashAlgorithm": keyDataHashAlgorithm,
