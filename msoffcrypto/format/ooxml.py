@@ -45,17 +45,14 @@ def _parseinfo_standard(ole):
     header = _parse_encryptionheader(blob)
     block = ole.read()
     blob = io.BytesIO(block)
-    algIdMap = {
-        0x0000660E: "AES-128",
-        0x0000660F: "AES-192",
-        0x00006610: "AES-256",
-    }
-    verifier = _parse_encryptionverifier(
-        blob, "AES" if header["algId"] & 0xFF00 == 0x6600 else "RC4"
-    )  # TODO: Fix
+    algorithm = ECMA376Standard.algorithm_name(header["algId"])
+    # Parse the verifier even for unknown algorithms (as AES) so that a
+    # clean DecryptionError can be raised later on key derivation/use
+    verifier = _parse_encryptionverifier(blob, algorithm or "AES")
     info = {
         "header": header,
         "verifier": verifier,
+        "algorithm": algorithm,
     }
     return info
 
@@ -227,6 +224,7 @@ class OOXMLFile(base.BaseOfficeFile):
                         self.secret_key,
                         self.info["verifier"]["encryptedVerifier"],
                         self.info["verifier"]["encryptedVerifierHash"],
+                        self.info["algorithm"],
                     )
                     if not verified:
                         raise exceptions.InvalidKeyError("Key verification failed")
@@ -285,7 +283,9 @@ class OOXMLFile(base.BaseOfficeFile):
             outfile.write(obuf)
         elif self.type == "standard":
             with self.file.openstream("EncryptedPackage") as stream:
-                obuf = ECMA376Standard.decrypt(self.secret_key, stream)
+                obuf = ECMA376Standard.decrypt(
+                    self.secret_key, stream, self.info["algorithm"]
+                )
             outfile.write(obuf)
         elif self.type == "plain":
             raise exceptions.DecryptionError("Document is not encrypted")

@@ -1,4 +1,10 @@
 
+Unreleased
+==========
+
+  * Support RC4 (algId 0x6801) in ECMA-376 standard encryption; the standard decryption path now honors the declared algorithm
+  * Raise DecryptionError for unknown algId or a keySize inconsistent with the algorithm family in standard encryption
+
 v6.1.0 / 2026-11-04
 ===================
 

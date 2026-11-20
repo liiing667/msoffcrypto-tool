@@ -33,6 +33,8 @@ EXAMPLE_FILES = (
     ("example_password.docx", "example.docx", PASSWORD),
     ("example_password.xlsx", "example.xlsx", PASSWORD),
     ("ecma376standard_password.docx", "ecma376standard_password_plain.docx", PASSWORD),
+    ("ecma376standard_rc4_password.docx", "ecma376standard_password_plain.docx", PASSWORD),
+    ("ecma376standard_aes256_password.docx", "ecma376standard_password_plain.docx", PASSWORD),
     ("rc4cryptoapi_password.doc", "rc4cryptoapi_password_plain.doc", PASSWORD),
     ("rc4cryptoapi_password.xls", "rc4cryptoapi_password_plain.xls", PASSWORD),
     ("rc4cryptoapi_password.ppt", "rc4cryptoapi_password_plain.ppt", PASSWORD),

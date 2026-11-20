@@ -6,8 +6,33 @@ from struct import pack, unpack
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from msoffcrypto import exceptions
+
+try:
+    # NOTE: Avoid DeprecationWarning since cryptography>=43.0
+    # TODO: .algorithm differs from the official documentation
+    from cryptography.hazmat.decrepit.ciphers.algorithms import ARC4
+except ImportError:
+    from cryptography.hazmat.primitives.ciphers.algorithms import ARC4
+
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
+# [MS-OFFCRYPTO] 2.3.5.2 EncryptionHeader AlgID
+ALG_ID_AES128 = 0x0000660E
+ALG_ID_AES192 = 0x0000660F
+ALG_ID_AES256 = 0x00006610
+ALG_ID_RC4 = 0x00006801
+
+_AES_KEY_SIZES = {
+    ALG_ID_AES128: 128,
+    ALG_ID_AES192: 192,
+    ALG_ID_AES256: 256,
+}
+
+# For RC4 the key size MUST be between 40 and 128 bits, in increments of 8 bits
+_RC4_MIN_KEY_SIZE = 40
+_RC4_MAX_KEY_SIZE = 128
 
 
 class ECMA376Standard:
@@ -15,7 +40,50 @@ class ECMA376Standard:
         pass
 
     @staticmethod
-    def decrypt(key, ibuf):
+    def algorithm_name(algId):
+        r"""
+        Return the algorithm family name ("AES" or "RC4") for the given AlgID,
+        or None if the AlgID is not supported.
+        """
+        if algId in _AES_KEY_SIZES:
+            return "AES"
+        elif algId == ALG_ID_RC4:
+            return "RC4"
+        return None
+
+    @staticmethod
+    def resolve_algorithm(algId, keySize):
+        r"""
+        Return the algorithm family name ("AES" or "RC4") for the given AlgID,
+        raising DecryptionError if the AlgID is unknown or if keySize is
+        inconsistent with the algorithm family.
+        """
+        name = ECMA376Standard.algorithm_name(algId)
+        if name is None:
+            raise exceptions.DecryptionError(
+                "Unsupported algorithm (algId: 0x{:08X})".format(algId)
+            )
+        if name == "AES":
+            if keySize != _AES_KEY_SIZES[algId]:
+                raise exceptions.DecryptionError(
+                    "keySize {} is inconsistent with algId 0x{:08X} (AES-{})".format(
+                        keySize, algId, _AES_KEY_SIZES[algId]
+                    )
+                )
+        elif name == "RC4":
+            if (
+                keySize % 8 != 0
+                or not _RC4_MIN_KEY_SIZE <= keySize <= _RC4_MAX_KEY_SIZE
+            ):
+                raise exceptions.DecryptionError(
+                    "Invalid RC4 keySize {} (must be between {} and {} bits, in increments of 8)".format(
+                        keySize, _RC4_MIN_KEY_SIZE, _RC4_MAX_KEY_SIZE
+                    )
+                )
+        return name
+
+    @staticmethod
+    def decrypt(key, ibuf, algorithm="AES"):
         r"""
         Return decrypted data.
 
@@ -24,15 +92,22 @@ class ECMA376Standard:
         totalSize = unpack("<I", ibuf.read(4))[0]
         logger.debug("totalSize: {}".format(totalSize))
         ibuf.seek(8)
-        aes = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
-        decryptor = aes.decryptor()
+        if algorithm == "AES":
+            cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
+        elif algorithm == "RC4":
+            cipher = Cipher(ARC4(key), mode=None, backend=default_backend())
+        else:
+            raise exceptions.DecryptionError(
+                "Unsupported algorithm: {}".format(algorithm)
+            )
+        decryptor = cipher.decryptor()
         x = ibuf.read()
         dec = decryptor.update(x) + decryptor.finalize()
         obuf.write(dec[:totalSize])
         return obuf.getvalue()  # return obuf.getbuffer()
 
     @staticmethod
-    def verifykey(key, encryptedVerifier, encryptedVerifierHash):
+    def verifykey(key, encryptedVerifier, encryptedVerifierHash, algorithm="AES"):
         r"""
         Return True if the given intermediate key is valid.
 
@@ -45,12 +120,24 @@ class ECMA376Standard:
         # TODO: For consistency with Agile, rename method to verify_password or the like
         logger.debug([key, encryptedVerifier, encryptedVerifierHash])
         # https://msdn.microsoft.com/en-us/library/dd926426(v=office.12).aspx
-        aes = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
-        decryptor = aes.decryptor()
-        verifier = decryptor.update(encryptedVerifier)
+        if algorithm == "AES":
+            cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
+            decryptor = cipher.decryptor()
+            verifier = decryptor.update(encryptedVerifier)
+            decryptor = cipher.decryptor()
+            verifierHash = decryptor.update(encryptedVerifierHash)
+        elif algorithm == "RC4":
+            # The verifier and its hash are encrypted as a single RC4 stream
+            cipher = Cipher(ARC4(key), mode=None, backend=default_backend())
+            decryptor = cipher.decryptor()
+            verifier = decryptor.update(encryptedVerifier)
+            verifierHash = decryptor.update(encryptedVerifierHash)
+        else:
+            raise exceptions.DecryptionError(
+                "Unsupported algorithm: {}".format(algorithm)
+            )
         expected_hash = sha1(verifier).digest()
-        decryptor = aes.decryptor()
-        verifierHash = decryptor.update(encryptedVerifierHash)[: sha1().digest_size]
+        verifierHash = verifierHash[: sha1().digest_size]
         return expected_hash == verifierHash
 
     @staticmethod
@@ -71,6 +158,7 @@ class ECMA376Standard:
             >>> ECMA376Standard.makekey_from_password(password, algId, algIdHash, providerType, keySize, saltSize, salt) == expected
             True
         """
+        ECMA376Standard.resolve_algorithm(algId, keySize)
         logger.debug(
             [
                 password,
