@@ -54,6 +54,12 @@ group.add_argument("-p", "--password", nargs="?", const="", dest="password", hel
 group.add_argument("-t", "--test", dest="test_encrypted", action="store_true", help="test if the file is encrypted")
 parser.add_argument("-e", dest="encrypt", action="store_true", help="encryption mode (default is false)")
 parser.add_argument("-v", dest="verbose", action="store_true", help="print verbose information")
+parser.add_argument(
+    "--no-integrity",
+    dest="verify_integrity",
+    action="store_false",
+    help="skip the HMAC integrity check when decrypting ECMA-376 Agile encrypted files (enabled by default)",
+)
 parser.add_argument("infile", nargs="?", type=argparse.FileType("rb"), help="input file")
 parser.add_argument("outfile", nargs="?", type=argparse.FileType("wb"), help="output file (if blank, stdout is used)")
 
@@ -100,9 +106,24 @@ def main():
             raise exceptions.FileFormatError("Not an OLE file")
 
         file = OfficeFile(args.infile)
-        file.load_key(password=password)
+        is_ooxml = file.format == "ooxml"
 
-        file.decrypt(args.outfile)
+        if is_ooxml:
+            # For ECMA-376 Agile/Standard the password can be checked
+            # before decryption, so a wrong password is reported as such
+            # rather than as an integrity or decryption failure.
+            file.load_key(password=password, verify_password=True)
+        else:
+            file.load_key(password=password)
+
+        try:
+            if is_ooxml:
+                file.decrypt(args.outfile, verify_integrity=args.verify_integrity)
+            else:
+                file.decrypt(args.outfile)
+        except exceptions.IntegrityError as exc:
+            print("{}: {}".format(args.infile.name, exc), file=sys.stderr)
+            sys.exit(2)
 
 
 if __name__ == "__main__":

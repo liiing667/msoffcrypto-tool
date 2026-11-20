@@ -248,7 +248,7 @@ class OOXMLFile(base.BaseOfficeFile):
         else:
             raise exceptions.DecryptionError("No key specified")
 
-    def decrypt(self, outfile, verify_integrity=False):
+    def decrypt(self, outfile, verify_integrity=True):
         """
         >>> from msoffcrypto import exceptions
         >>> from io import BytesIO; outfile = BytesIO()
@@ -261,6 +261,10 @@ class OOXMLFile(base.BaseOfficeFile):
         """
         if self.type == "agile":
             with self.file.openstream("EncryptedPackage") as stream:
+                # Agile encryption stores an HMAC of the payload, which is
+                # verified by default so that tampered documents are rejected.
+                # verify_integrity=False restores the legacy behavior of
+                # decrypting the payload without checking it.
                 if verify_integrity:
                     verified = ECMA376Agile.verify_integrity(
                         self.secret_key,
@@ -272,7 +276,7 @@ class OOXMLFile(base.BaseOfficeFile):
                         stream,
                     )
                     if not verified:
-                        raise exceptions.InvalidKeyError(
+                        raise exceptions.IntegrityError(
                             "Payload integrity verification failed"
                         )
 

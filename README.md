@@ -53,6 +53,14 @@ msoffcrypto-tool document.doc --test -v
 
 It returns `1` if the file is encrypted, `0` if not.
 
+For ECMA-376 Agile encrypted files, the HMAC of the payload is verified
+before decryption. A tampered file is rejected with exit code `2`. Pass
+`--no-integrity` to skip the check and decrypt the payload anyway:
+
+```
+msoffcrypto-tool --no-integrity encrypted.docx decrypted.docx -p Passw0rd
+```
+
 #### Encryption (OOXML only, experimental)
 
 > [!IMPORTANT]
@@ -118,9 +126,12 @@ file.load_key(private_key=open("priv.pem", "rb"))
 # Use intermediate key (secretKey)
 file.load_key(secret_key=binascii.unhexlify("AE8C36E68B4BB9EA46E5544A5FDB6693875B2FDE1507CBC65C8BCF99E25C2562"))
 
-# Check the HMAC of the data payload before decryption (default: False)
-# Currently, the verify_integrity option is only meaningful for ECMA-376 Agile Encryption
-file.decrypt(open("decrypted.docx", "wb"), verify_integrity=True)
+# Check the HMAC of the data payload before decryption (default: True)
+# Currently, the verify_integrity option is only meaningful for ECMA-376 Agile Encryption.
+# A tampered payload raises msoffcrypto.exceptions.IntegrityError; pass
+# verify_integrity=False to decrypt without the check (legacy behavior).
+file.decrypt(open("decrypted.docx", "wb"))
+file.decrypt(open("decrypted.docx", "wb"), verify_integrity=False)
 ```
 
 Supported key types are

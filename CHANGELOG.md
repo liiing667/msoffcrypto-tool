@@ -1,4 +1,12 @@
 
+Unreleased
+==========
+
+  * (BREAKING) Verify the HMAC payload of ECMA-376 Agile encrypted files by default in `OOXMLFile.decrypt()` (`verify_integrity=True`); use `verify_integrity=False` for the legacy behavior
+  * Add `IntegrityError`, raised when the agile payload integrity check fails (tampering is no longer reported as an invalid key)
+  * Add the `--no-integrity` CLI flag to skip the agile HMAC check; tampered files now make the CLI exit with code `2`
+  * Verify the password before decryption in the CLI so wrong passwords are still reported as `InvalidKeyError`
+
 v6.1.0 / 2026-11-04
 ===================
 

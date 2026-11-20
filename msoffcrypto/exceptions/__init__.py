@@ -26,3 +26,9 @@ class InvalidKeyError(DecryptionError):
     """Raised when the given password or key is incorrect or cannot be verified."""
 
     pass
+
+
+class IntegrityError(DecryptionError):
+    """Raised when the integrity check of an encrypted payload fails."""
+
+    pass
