@@ -12,6 +12,7 @@ from msoffcrypto.format import base
 from msoffcrypto.format.common import _parse_header_RC4CryptoAPI
 from msoffcrypto.method.rc4 import DocumentRC4
 from msoffcrypto.method.rc4_cryptoapi import DocumentRC4CryptoAPI
+from msoffcrypto.method.xor_obfuscation import DocumentXOR
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -268,6 +269,10 @@ class Doc97File(base.BaseOfficeFile):
         ...     officefile = Doc97File(f)
         ...     officefile.load_key(password="Password1234_")
 
+        >>> with open("tests/inputs/xor_password_123456789012345.doc", "rb") as f:
+        ...     officefile = Doc97File(f)
+        ...     officefile.load_key(password="123456789012345")
+
         >>> with open("tests/inputs/rc4cryptoapi_password.doc", "rb") as f:
         ...     officefile = Doc97File(f)
         ...     officefile.load_key(password="0000")
@@ -308,8 +313,16 @@ class Doc97File(base.BaseOfficeFile):
 
         if fib.base.fEncrypted == 1:
             if fib.base.fObfuscation == 1:  # Using XOR obfuscation
-                xor_obf_password_verifier = fib.base.IKey
+                # [MS-DOC] FibBase.lKey: if fObfuscation is 1, the low 16 bits
+                # are the XOR key and the high 16 bits are the password
+                # verifier ([MS-OFFCRYPTO] 2.3.7.1)
+                xor_obf_password_verifier = (fib.base.IKey >> 16) & 0xFFFF
                 logger.debug(hex(xor_obf_password_verifier))
+                if DocumentXOR.verifypw(password, xor_obf_password_verifier):
+                    self.type = "xor"
+                    self.key = password
+                else:
+                    raise exceptions.InvalidKeyError("Failed to verify password")
             else:  # elif fib.base.fObfuscation == 0:
                 encryptionHeader_size = fib.base.IKey
                 logger.debug(
@@ -423,6 +436,8 @@ class Doc97File(base.BaseOfficeFile):
                 dec1 = DocumentRC4CryptoAPI.decrypt(
                     self.key, self.salt, self.keySize, worddocument
                 )
+            elif self.type == "xor":
+                dec1 = DocumentXOR.decrypt_word(self.key, worddocument, FIB_LENGTH)
             else:
                 raise exceptions.DecryptionError(
                     "Unsupported encryption method: {}".format(self.type)
@@ -438,17 +453,22 @@ class Doc97File(base.BaseOfficeFile):
         if self.type == "rc4":
             with self.ole.openstream(self.info.tablename) as stream:
                 dec2 = DocumentRC4.decrypt(self.key, self.salt, stream)
+            obuf2.write(dec2.read())
         elif self.type == "rc4_cryptoapi":
             with self.ole.openstream(self.info.tablename) as stream:
                 dec2 = DocumentRC4CryptoAPI.decrypt(
                     self.key, self.salt, self.keySize, stream
                 )
+            obuf2.write(dec2.read())
+        elif self.type == "xor":
+            # The table stream is not obfuscated; copy it through as-is
+            with self.ole.openstream(self.info.tablename) as stream:
+                obuf2.write(stream.read())
         else:
             raise exceptions.DecryptionError(
                 "Unsupported encryption method: {}".format(self.type)
             )
 
-        obuf2.write(dec2.read())
         obuf2.seek(0)
 
         obuf3 = None
@@ -457,16 +477,21 @@ class Doc97File(base.BaseOfficeFile):
             if self.type == "rc4":
                 with self.ole.openstream("Data") as data_stream:
                     dec3 = DocumentRC4.decrypt(self.key, self.salt, data_stream)
+                obuf3.write(dec3.read())
             elif self.type == "rc4_cryptoapi":
                 with self.ole.openstream("Data") as data_stream:
                     dec3 = DocumentRC4CryptoAPI.decrypt(
                         self.key, self.salt, self.keySize, data_stream
                     )
+                obuf3.write(dec3.read())
+            elif self.type == "xor":
+                # The Data stream is not obfuscated; copy it through as-is
+                with self.ole.openstream("Data") as data_stream:
+                    obuf3.write(data_stream.read())
             else:
                 raise exceptions.DecryptionError(
                     "Unsupported encryption method: {}".format(self.type)
                 )
-            obuf3.write(dec3.read())
             obuf3.seek(0)
 
         with tempfile.TemporaryFile() as _outfile:

@@ -37,6 +37,7 @@ EXAMPLE_FILES = (
     ("rc4cryptoapi_password.xls", "rc4cryptoapi_password_plain.xls", PASSWORD),
     ("rc4cryptoapi_password.ppt", "rc4cryptoapi_password_plain.ppt", PASSWORD),
     ("xor_password_123456789012345.xls", "xor_password_123456789012345_plain.xls", "123456789012345"),
+    ("xor_password_123456789012345.doc", "xor_password_123456789012345_plain.doc", "123456789012345"),
 )
 
 #: output dir:

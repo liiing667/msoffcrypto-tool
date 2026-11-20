@@ -352,3 +352,42 @@ class DocumentXOR:
 
         obuf.seek(0)
         return obuf
+
+    @staticmethod
+    def decrypt_word(password, ibuf, header_size=0x44):
+        r"""
+        Return de-obfuscated WordDocument stream data (Binary Document XOR
+        Data Transformation Method 1, [MS-OFFCRYPTO] 2.3.7.4).
+
+        The first ``header_size`` bytes of the stream (the beginning of the
+        FIB) are not obfuscated and are copied through as-is. For each
+        obfuscated byte, the index into the XOR array is derived from the
+        absolute offset of the byte within the stream.
+
+            >>> password = 'VelvetSweatshop'
+            >>> xor_array = DocumentXOR.create_xor_array_method1(password)
+            >>> plain = b'\\x00\\x01\\x02\\x03' + bytes(range(0x30))
+            >>> cipher = plain[:4] + bytes(
+            ...     DocumentXOR.rol(b, 5, 8) ^ xor_array[(4 + i) % 16]
+            ...     for i, b in enumerate(plain[4:]))
+            >>> DocumentXOR.decrypt_word(password, io.BytesIO(cipher), 4).read() == plain
+            True
+        """
+        obuf = io.BytesIO()
+
+        xor_array = DocumentXOR.create_xor_array_method1(password)
+
+        obuf.write(ibuf.read(header_size))
+        offset = header_size
+        while True:
+            buf = ibuf.read(0x1000)
+            if not buf:
+                break
+            dec = bytearray(len(buf))
+            for i, byte in enumerate(buf):
+                dec[i] = DocumentXOR.ror(byte ^ xor_array[(offset + i) % 16], 5, 8)
+            obuf.write(dec)
+            offset += len(buf)
+
+        obuf.seek(0)
+        return obuf

@@ -1,4 +1,9 @@
 
+Unreleased
+===================
+
+  * Support XOR obfuscation (fObfuscation=1) for MS-DOC files: verify the password against the FIB lKey verifier in `load_key()` and de-obfuscate the WordDocument stream in `decrypt()`
+
 v6.1.0 / 2026-11-04
 ===================
 
