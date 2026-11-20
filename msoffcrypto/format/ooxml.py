@@ -1,4 +1,5 @@
 import base64
+import binascii
 import io
 import logging
 import zipfile
@@ -10,7 +11,7 @@ import olefile
 from msoffcrypto import exceptions
 from msoffcrypto.format import base
 from msoffcrypto.format.common import _parse_encryptionheader, _parse_encryptionverifier
-from msoffcrypto.method.ecma376_agile import ECMA376Agile
+from msoffcrypto.method.ecma376_agile import ECMA376Agile, validate_cipher_params
 from msoffcrypto.method.ecma376_standard import ECMA376Standard
 
 logger = logging.getLogger(__name__)
@@ -63,56 +64,106 @@ def _parseinfo_standard(ole):
 def _parseinfo_agile(ole):
     ole.seek(8)
     xml = parseString(ole.read())
-    keyDataSalt = base64.b64decode(
-        xml.getElementsByTagName("keyData")[0].getAttribute("saltValue")
-    )
-    keyDataHashAlgorithm = xml.getElementsByTagName("keyData")[0].getAttribute(
-        "hashAlgorithm"
-    )
-    keyDataBlockSize = int(
-        xml.getElementsByTagName("keyData")[0].getAttribute("blockSize")
-    )
-    encryptedHmacKey = base64.b64decode(
-        xml.getElementsByTagName("dataIntegrity")[0].getAttribute("encryptedHmacKey")
-    )
-    encryptedHmacValue = base64.b64decode(
-        xml.getElementsByTagName("dataIntegrity")[0].getAttribute("encryptedHmacValue")
-    )
+
+    keyDataNodes = xml.getElementsByTagName("keyData")
+    if not keyDataNodes:
+        raise exceptions.DecryptionError(
+            "Agile EncryptionInfo is missing the keyData element"
+        )
+    keyData = _parse_agile_cipher_params(keyDataNodes[0], "keyData")
+
+    dataIntegrityNodes = xml.getElementsByTagName("dataIntegrity")
+    if not dataIntegrityNodes:
+        raise exceptions.DecryptionError(
+            "Agile EncryptionInfo is missing the dataIntegrity element"
+        )
+    try:
+        encryptedHmacKey = base64.b64decode(
+            dataIntegrityNodes[0].getAttribute("encryptedHmacKey"), validate=True
+        )
+        encryptedHmacValue = base64.b64decode(
+            dataIntegrityNodes[0].getAttribute("encryptedHmacValue"), validate=True
+        )
+    except (binascii.Error, ValueError) as e:
+        raise exceptions.DecryptionError(
+            "Invalid dataIntegrity element in agile EncryptionInfo: {}".format(e)
+        )
+
     password_node = xml.getElementsByTagNameNS(
         "http://schemas.microsoft.com/office/2006/keyEncryptor/password", "encryptedKey"
-    )[0]
-    spinValue = int(password_node.getAttribute("spinCount"))
+    )
+    if not password_node:
+        raise exceptions.DecryptionError(
+            "Agile EncryptionInfo has no password key encryptor"
+        )
+    password_node = password_node[0]
+    password = _parse_agile_cipher_params(password_node, "password key encryptor")
+    try:
+        spinValue = int(password_node.getAttribute("spinCount"))
+        encryptedKeyValue = base64.b64decode(
+            password_node.getAttribute("encryptedKeyValue"), validate=True
+        )
+        encryptedVerifierHashInput = base64.b64decode(
+            password_node.getAttribute("encryptedVerifierHashInput"), validate=True
+        )
+        encryptedVerifierHashValue = base64.b64decode(
+            password_node.getAttribute("encryptedVerifierHashValue"), validate=True
+        )
+    except (binascii.Error, ValueError) as e:
+        raise exceptions.DecryptionError(
+            "Invalid password key encryptor in agile EncryptionInfo: {}".format(e)
+        )
     # [MS-OFFCRYPTO] 2.3.4.10 SpinCount: An unsigned integer that specifies the number of times to iterate on a hash of a password. It MUST NOT be greater than 10,000,000.
     # https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-offcrypto/87020a34-e73f-4139-99bc-bbdf6cf6fa55
     if not 0 <= spinValue <= 10_000_000:
         raise exceptions.DecryptionError("Agile spinCount must be between 0 and 10000000")
-    encryptedKeyValue = base64.b64decode(
-        password_node.getAttribute("encryptedKeyValue")
-    )
-    encryptedVerifierHashInput = base64.b64decode(
-        password_node.getAttribute("encryptedVerifierHashInput")
-    )
-    encryptedVerifierHashValue = base64.b64decode(
-        password_node.getAttribute("encryptedVerifierHashValue")
-    )
-    passwordSalt = base64.b64decode(password_node.getAttribute("saltValue"))
-    passwordHashAlgorithm = password_node.getAttribute("hashAlgorithm")
-    passwordKeyBits = int(password_node.getAttribute("keyBits"))
+    if len(encryptedKeyValue) != password["keyBits"] // 8:
+        raise exceptions.DecryptionError(
+            "encryptedKeyValue size {} does not match keyBits {}".format(
+                len(encryptedKeyValue), password["keyBits"]
+            )
+        )
     info = {
-        "keyDataSalt": keyDataSalt,
-        "keyDataHashAlgorithm": keyDataHashAlgorithm,
-        "keyDataBlockSize": keyDataBlockSize,
+        "keyDataSalt": keyData["saltValue"],
+        "keyDataHashAlgorithm": keyData["hashAlgorithm"],
+        "keyDataBlockSize": keyData["blockSize"],
         "encryptedHmacKey": encryptedHmacKey,
         "encryptedHmacValue": encryptedHmacValue,
         "encryptedVerifierHashInput": encryptedVerifierHashInput,
         "encryptedVerifierHashValue": encryptedVerifierHashValue,
         "encryptedKeyValue": encryptedKeyValue,
         "spinValue": spinValue,
-        "passwordSalt": passwordSalt,
-        "passwordHashAlgorithm": passwordHashAlgorithm,
-        "passwordKeyBits": passwordKeyBits,
+        "passwordSalt": password["saltValue"],
+        "passwordHashAlgorithm": password["hashAlgorithm"],
+        "passwordKeyBits": password["keyBits"],
     }
     return info
+
+
+def _parse_agile_cipher_params(node, context):
+    r"""
+    Read a hash/salt/keyBits parameter family from an agile EncryptionInfo
+    element and validate it before it is used to drive decryption.
+    """
+    try:
+        params = {
+            "saltSize": int(node.getAttribute("saltSize")),
+            "blockSize": int(node.getAttribute("blockSize")),
+            "keyBits": int(node.getAttribute("keyBits")),
+            "hashSize": int(node.getAttribute("hashSize")),
+            "cipherAlgorithm": node.getAttribute("cipherAlgorithm"),
+            "cipherChaining": node.getAttribute("cipherChaining"),
+            "hashAlgorithm": node.getAttribute("hashAlgorithm"),
+            "saltValue": base64.b64decode(
+                node.getAttribute("saltValue"), validate=True
+            ),
+        }
+    except (binascii.Error, ValueError) as e:
+        raise exceptions.DecryptionError(
+            "Invalid {} parameters in agile EncryptionInfo: {}".format(context, e)
+        )
+    validate_cipher_params(params, context)
+    return params
 
 
 def _parseinfo(ole):
@@ -281,6 +332,7 @@ class OOXMLFile(base.BaseOfficeFile):
                     self.info["keyDataSalt"],
                     self.info["keyDataHashAlgorithm"],
                     stream,
+                    self.info["keyDataBlockSize"],
                 )
             outfile.write(obuf)
         elif self.type == "standard":

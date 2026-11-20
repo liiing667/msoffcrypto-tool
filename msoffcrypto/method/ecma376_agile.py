@@ -27,6 +27,12 @@ ALGORITHM_HASH = {
     "SHA512": sha512,
 }
 
+#: AES key sizes (in bits) supported by the agile decryption engine.
+SUPPORTED_KEY_BITS = (128, 192, 256)
+
+#: AES always operates on 16-byte blocks.
+AES_BLOCK_SIZE = 16
+
 blkKey_VerifierHashInput = bytearray([0xFE, 0xA7, 0xD2, 0x76, 0x3B, 0x4B, 0x9E, 0x79])
 blkKey_encryptedVerifierHashValue = bytearray(
     [0xD7, 0xAA, 0x0F, 0x6D, 0x30, 0x61, 0x34, 0x4E]
@@ -60,7 +66,61 @@ def _normalize_key(key, n):
 
 
 def _get_hash_func(algorithm):
-    return ALGORITHM_HASH.get(algorithm, sha1)
+    try:
+        return ALGORITHM_HASH[algorithm]
+    except KeyError:
+        raise exceptions.DecryptionError(
+            "Unsupported hash algorithm: {!r}".format(algorithm)
+        )
+
+
+def validate_cipher_params(params, context="cipher"):
+    r"""
+    Validate that a hash/salt/keyBits parameter family declared in an agile
+    EncryptionInfo descriptor is internally consistent and supported by this
+    implementation. Raises DecryptionError on any inconsistency.
+    """
+    hashName = params.get("hashAlgorithm")
+    hashCalc = ALGORITHM_HASH.get(hashName)
+    if hashCalc is None:
+        raise exceptions.DecryptionError(
+            "Unsupported hash algorithm in {}: {!r}".format(context, hashName)
+        )
+    if params.get("hashSize") != hashCalc().digest_size:
+        raise exceptions.DecryptionError(
+            "hashSize {} is inconsistent with hash algorithm {} in {}".format(
+                params.get("hashSize"), hashName, context
+            )
+        )
+    saltValue = params.get("saltValue")
+    if saltValue is None or len(saltValue) != params.get("saltSize"):
+        raise exceptions.DecryptionError(
+            "saltValue size does not match saltSize {} in {}".format(
+                params.get("saltSize"), context
+            )
+        )
+    if params.get("keyBits") not in SUPPORTED_KEY_BITS:
+        raise exceptions.DecryptionError(
+            "Unsupported keyBits {} in {}".format(params.get("keyBits"), context)
+        )
+    if params.get("blockSize") != AES_BLOCK_SIZE:
+        raise exceptions.DecryptionError(
+            "Unsupported blockSize {} in {}".format(
+                params.get("blockSize"), context
+            )
+        )
+    if params.get("cipherAlgorithm") != "AES":
+        raise exceptions.DecryptionError(
+            "Unsupported cipher algorithm in {}: {!r}".format(
+                context, params.get("cipherAlgorithm")
+            )
+        )
+    if params.get("cipherChaining") != "ChainingModeCBC":
+        raise exceptions.DecryptionError(
+            "Unsupported cipher chaining mode in {}: {!r}".format(
+                context, params.get("cipherChaining")
+            )
+        )
 
 
 def _decrypt_aes_cbc(data, key, iv):
@@ -203,7 +263,7 @@ class ECMA376Agile:
         return encryption_key
 
     @staticmethod
-    def decrypt(key, keyDataSalt, hashAlgorithm, ibuf):
+    def decrypt(key, keyDataSalt, hashAlgorithm, ibuf, keyDataBlockSize=AES_BLOCK_SIZE):
         r"""
         Return decrypted data.
 
@@ -228,7 +288,7 @@ class ECMA376Agile:
         ):
             saltWithBlockKey = keyDataSalt + pack("<I", i)
             iv = hashCalc(saltWithBlockKey).digest()
-            iv = iv[:16]
+            iv = _normalize_key(iv, keyDataBlockSize)
             aes = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
             decryptor = aes.decryptor()
             dec = decryptor.update(buf) + decryptor.finalize()
@@ -380,7 +440,7 @@ class ECMA376Agile:
                 break
 
             iv = _normalize_key(
-                hashCalc(salt_value + pack("<I", i)).digest(), params.saltSize
+                hashCalc(salt_value + pack("<I", i)).digest(), params.blockSize
             )
 
             # Per the specifications, we need to make sure the last chunk is padded to our
